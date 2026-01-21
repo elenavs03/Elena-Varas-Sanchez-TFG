@@ -42,6 +42,6 @@ Los paquetes necesarios para el desarrollo del proyecto en el entorno R son los 
 ## Contenido del repositorio
 Dentro de este repositorio se puede encontrar:
 
-- En la carpeta [memoria], el documento final del Trabajo de Fin de Grado en formato PDF.
-- En la carpeta **code**, los scripts en R utilizados para el análisis exploratorio de los datos, la estimación de los modelos lineales generalizados y la obtención de las predicciones de frecuencia, severidad y prima pura.
-- En la carpeta **powerbi**, el archivo del dashboard desarrollado en Power BI, que integra los resultados obtenidos a partir de los modelos estadísticos.
+- En la carpeta [memoria](memoria), el documento final del Trabajo de Fin de Grado en formato PDF.
+- En la carpeta [code](code), los scripts en R utilizados para el análisis exploratorio de los datos, la estimación de los modelos lineales generalizados y la obtención de las predicciones de frecuencia, severidad y prima pura.
+- En la carpeta [powerbi](powerbi), el archivo del dashboard desarrollado en Power BI, que integra los resultados obtenidos a partir de los modelos estadísticos.
