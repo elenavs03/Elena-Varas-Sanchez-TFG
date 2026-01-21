@@ -1,0 +1,1712 @@
+---
+title: "TFG def"
+author: "Elena Varas Sánchez"
+date: "2025-11-16"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+### Librerias y paquetes 
+
+```{r}
+library(zoo)
+library(xts)
+library(CASdatasets)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(scales)
+library(forcats)
+library(kableExtra)
+library(MASS)
+library(survival)
+library(effects)
+library(MASS)
+library(broom)
+library(ggplot2)
+library(mgcv)
+library(stringr)
+library(statmod) 
+library(tweedie)
+library(openxlsx)
+library(glmmTMB)
+library(cplm)
+```
+
+
+### Instalación y carga de datos 
+
+```{r}
+#install.packages('xts')
+install.packages("CASdatasets", repos = "http://dutangc.free.fr/pub/RRepos/pub/", type="source")
+```
+
+Carga de los 2 datasets
+
+```{r}
+# Tabla frecuencia
+data(freMTPL2freq)
+freq <- freMTPL2freq
+
+# Tabla severidad
+data(freMTPL2sev)
+sev <- freMTPL2sev
+```
+
+
+### Exploración inicial de la estructura de la base de datos
+#### Tabla de frecuencia
+
+Exploración inicial --> 
+
+```{r,}
+summary(freq)
+names(freq)
+dim(freq)
+```
+
+12 variaable y 677991 registros.
+
+Renombramiento variables --> 
+
+```{r}
+freq <- freq %>%
+  rename(
+    id_poliza = IDpol,
+    exposicion = Exposure,
+    numero_siniestros = ClaimNb,
+    potencia = VehPower,
+    edad_conductor = DrivAge,
+    edad_vehiculo = VehAge,
+    bonus_malus = BonusMalus,
+    marca = VehBrand,
+    combustible = VehGas,
+    area = Area,
+    region = Region
+  )
+```
+
+#### Tabla de severidad
+
+Exploración inicial -->
+
+```{r}
+summary(sev)
+names(sev)
+dim(sev)
+```
+
+2 variables y 26444 registros
+
+Renombramiento variables -->
+
+```{r}
+sev <- sev %>%
+  rename(
+    id_poliza = IDpol,
+    coste_siniestro = ClaimAmount
+  )
+```
+
+#### Verificación básica de la calidad de los datos
+
+```{r}
+colSums(is.na(freq))
+colSums(is.na(sev))
+```
+
+Analisis valores duplicados -->
+
+```{r}
+any(duplicated(freq$IDpol))   
+any(duplicated(sev$IDpol))   
+```
+
+### Preparación y unificación del conjunto de datos 
+
+```{r}
+sev <- sev %>%
+  group_by(id_poliza) %>%
+  summarise(
+    total_importe_siniestros = sum(coste_siniestro, na.rm = TRUE)
+  ) %>%
+  ungroup()   
+```
+
+Unificamos las dos tablas
+
+```{r}
+polizas <- freq %>%
+  left_join(sev, by = "id_poliza")
+```
+
+Remplazamos los NA en el importe total de siniestros y en el número de siniestros por cero
+
+```{r}
+polizas <- polizas %>%
+  mutate(
+    total_importe_siniestros = ifelse(is.na(total_importe_siniestros), 0, total_importe_siniestros),
+  )
+```
+
+### Variables suplementarias
+
+**Tasa de siniestralidad**
+
+Cuántos siniestros ocurren en promedio por póliza, ajustado por el tiempo que la póliza ha estado en vigor. Permite comprar pólizas que no han estado aseguradas el mismo tiempo.
+
+$$
+\text{tasa siniestros} = \frac{\text{numero siniestros}}{\text{exposición}}
+$$
+
+```{r}
+polizas <- polizas %>%
+  mutate(tasa_siniestros = numero_siniestros / exposicion)
+```
+
+**Prima pura estimada**
+
+Cantidad de dinero que, en promedio, se espera pagar en siniestros por póliza y unidad de exposición.
+
+$$
+\text{importe medio siniestro} =
+\begin{cases}
+\dfrac{\text{total importe siniestros}}{\text{numero siniestros}}, & \text{si } \text{numero siniestros} > 0 \\[6pt]
+0, & \text{si } \text{numero siniestros} = 0
+\end{cases}
+$$
+
+
+$$
+\text{prima pura estimada}
+= \text{tasa siniestros} \times \text{importe medio siniestro}
+$$
+
+
+```{r}
+polizas <- polizas %>%
+  mutate(
+    importe_medio_siniestro = ifelse(numero_siniestros > 0, total_importe_siniestros / numero_siniestros, 0),
+    prima_pura_estimada = tasa_siniestros * importe_medio_siniestro
+  )
+```
+
+### Analisis descriptivo
+
+#### Exposición
+
+```{r}
+summary(polizas$exposicion)
+```
+
+Distribución -->
+
+```{r}
+ggplot(polizas, aes(x = exposicion)) +
+  geom_histogram(bins = 10, fill = "steelblue", color = "white") +
+  labs(title = "Distribución de la exposición", x = "Años asegurados", y = "Número de pólizas")+
+  theme_minimal() +
+  theme(
+    plot.title = element_text(hjust = 0.5, size = 12),
+    axis.title = element_text(size = 10),
+    axis.text = element_text(size = 8)
+  )
+```
+
+```{r}
+ggplot(polizas, aes(x = "", y = exposicion)) +
+  geom_boxplot(fill = "steelblue", color = "grey2") +
+  labs(
+    title = "Distribución de la exposición",
+    y = "Exposición (años asegurados)",
+    x = ""
+  ) +
+  theme_minimal()+
+  theme(
+    plot.title = element_text(hjust = 0.5, size = 12),
+    axis.title = element_text(size = 10),
+    axis.text = element_text(size = 8)
+  )
+
+```
+
+Depuramos los valores superiores a un año -->
+
+```{r}
+# Modificar las observaciones con exposición > 1, igualándolas a 1
+polizas <- polizas %>%
+  mutate(exposicion = ifelse(exposicion > 1, 1, exposicion))
+
+# Verificar el cambio
+summary(polizas$exposicion)
+```
+
+Distribución después de depurar la variable
+
+```{r}
+ggplot(polizas, aes(x = exposicion)) +
+  geom_histogram(bins = 10, fill = "steelblue", color = "white") +
+  labs(title = "Distribución de la exposición", x = "Años asegurados", y = "Número de pólizas")+
+  theme_minimal() +
+  theme(
+    plot.title = element_text(hjust = 0.5, size = 12),
+    axis.title = element_text(size = 10),
+    axis.text = element_text(size = 8)
+  )
+```
+
+#### Número de siniestros
+
+Tabla descriptiva antes de la depuración
+
+```{r}
+intervalos <- c(-Inf, 0, 1, 2, 3, 5, 10, 20, Inf)
+etiquetas  <- c("0", "1", "2", "3", "4-5", "6-10", "11-20", "Más de 20")
+
+tabla_siniestros <- table(cut(polizas$numero_siniestros, breaks = intervalos, labels = etiquetas, right = TRUE)) %>%
+  as.data.frame()
+
+colnames(tabla_siniestros) <- c("Intervalo", "Recuento")
+tabla_siniestros$Porcentaje <- round(tabla_siniestros$Recuento / sum(tabla_siniestros$Recuento) * 100, 2)
+
+tabla_siniestros
+
+```
+
+Eliminamos los valores superiores a 4 siniestros para evitar una sobre dispersión.
+
+```{r}
+polizas <- polizas %>%
+  mutate(numero_siniestros = ifelse(numero_siniestros > 4, 4, numero_siniestros))
+summary(polizas$numero_siniestros)
+```
+
+```{r}
+ggplot(polizas, aes(x = factor(numero_siniestros))) +
+  geom_bar(fill = "steelblue", color = "white") +
+  labs(
+    title = "Número de siniestros por póliza",
+    x = "Número de siniestros",
+    y = "Frecuencia"
+  )  +
+  theme_minimal(base_size = 10) +
+  theme(
+    plot.title    = element_text(hjust = 0.5, face = "bold", size = 12),
+    plot.subtitle = element_text(hjust = 0.5, size = 9)
+  )
+```
+
+
+```{r}
+tabla_sin <- polizas %>% 
+  count(numero_siniestros) %>% 
+  mutate(
+    prop = n / sum(n),
+    etiqueta = percent(prop, accuracy = 0.1, decimal.mark = ","),
+    numero_siniestros = factor(numero_siniestros)
+  )
+
+ggplot(tabla_sin, aes(x = numero_siniestros, y = n)) +
+  geom_col(fill = "steelblue", color = "white") +
+  geom_text(aes(label = etiqueta), vjust = -0.3, size = 3) +
+  labs(
+    title    = "Número de siniestros por póliza",
+    x = "Número de siniestros en la póliza",
+    y = "Número de pólizas"
+  ) +
+  scale_y_continuous(
+    labels = label_number(big.mark = ".", decimal.mark = ","),
+    expand = expansion(mult = c(0, 0.05))
+  ) +
+  theme_minimal(base_size = 10) +
+  theme(
+    plot.title    = element_text(hjust = 0.5, face = "bold", size = 12),
+    plot.subtitle = element_text(hjust = 0.5, size = 9)
+  )
+```
+#### Tasa de sineistros
+
+Proporción de pólizas con tasa igual a cero
+
+```{r}
+tabla_cero <- polizas %>%
+  mutate(tasa_pos = if_else(tasa_siniestros == 0, "tasa siniestros = 0", "tasa sineistros > 0 siniestros")) %>%
+  count(tasa_pos) %>%
+  mutate(porcentaje = 100 * n / sum(n))
+
+ggplot(tabla_cero, aes(x = tasa_pos, y = n)) +
+  geom_col(fill = "steelblue", color = "white") +
+  geom_text(aes(label = paste0(round(porcentaje, 1), "%")),
+            vjust = -0.5, size = 3) +
+  labs(
+    title = "Pólizas con tasa de siniestros nula y positiva",
+    x = "Situación",
+    y = "Número de pólizas"
+  )+
+  theme_minimal(base_size = 10) +
+  theme(
+    plot.title    = element_text(hjust = 0.5, face = "bold", size = 12),
+    plot.subtitle = element_text(hjust = 0.5, size = 9)
+  )
+
+```
+
+Histograma solo para tasas positivas y recortado
+
+```{r}
+tasa_pos <- polizas %>%
+  filter(tasa_siniestros > 0,
+         tasa_siniestros <= 5)  # recorte a 5; ajusta si hace falta
+
+ggplot(tasa_pos, aes(x = tasa_siniestros)) +
+  geom_histogram(bins = 50, fill = "steelblue", color = "white") +
+  labs(
+    title = "Distribución de la tasa de siniestros (pólizas con tasa > 0,\nrecorte en 5)",
+    x = "Tasa de siniestros",
+    y = "Número de pólizas"
+  ) +
+  theme_minimal(base_size = 10) +
+  theme(
+    plot.title    = element_text(hjust = 0.5, face = "bold", size = 12),
+    plot.subtitle = element_text(hjust = 0.5, size = 9)
+  )
+
+```
+```{r}
+
+tasa_pos <- polizas %>% 
+  filter(tasa_siniestros > 0,
+         tasa_siniestros <= quantile(tasa_siniestros[tasa_siniestros > 0], 0.99))
+
+ggplot(tasa_pos, aes(x = tasa_siniestros, y = exposicion)) +
+  geom_point(alpha = 0.15, color = "steelblue", size = 1) +
+  labs(
+    title = "Dispersión de la tasa de siniestros frente a la exposición",
+    x = "Tasa de siniestros",
+    y = "Exposición"
+  ) +
+  theme_minimal(base_size = 10) +
+  theme(
+    plot.title    = element_text(hjust = 0.5, face = "bold", size = 12),
+    plot.subtitle = element_text(hjust = 0.5, size = 9)
+  )
+
+
+```
+
+#### Importe total siniestro
+
+```{r}
+ggplot(polizas %>% filter(total_importe_siniestros > 0),
+       aes(x = total_importe_siniestros)) +
+  geom_histogram(bins = 50, fill = "steelblue", color = "white") +
+  scale_x_log10(
+    labels = comma_format(accuracy = 1)) +
+  labs(title = "Importe total de siniestros (log)", x = "€ (escala log)", y = "Frecuencia") +
+  theme_minimal(base_size = 10) +
+  theme(
+    plot.title    = element_text(hjust = 0.5, face = "bold", size = 12),
+    plot.subtitle = element_text(hjust = 0.5, size = 9)
+  )
+
+
+```
+
+####Importe medio de siniestros
+
+```{r}
+
+ggplot(polizas %>% filter(importe_medio_siniestro > 0),
+       aes(x = importe_medio_siniestro)) +
+  geom_histogram(bins = 50, fill = "steelblue", color = "white") +
+  scale_x_log10(
+    labels = comma_format(accuracy = 1)) +
+  labs(title = "Importe medio de siniestro (log)", x = "€ (escala log)", y = "Frecuencia") +
+  theme_minimal(base_size = 10) +
+  theme(
+    plot.title    = element_text(hjust = 0.5, face = "bold", size = 12),
+    plot.subtitle = element_text(hjust = 0.5, size = 9)
+  )
+
+```
+
+####Prima pura estimada
+
+
+```{r}
+options(scipen = 999)  # evita usar notación científica
+summary(polizas$prima_pura_estimada)
+```
+
+```{r}
+polizas %>% 
+  filter(prima_pura_estimada > 0) %>%
+  ggplot(aes(x = prima_pura_estimada)) +
+  geom_histogram(bins = 60, fill = "steelblue", color = "white") +
+  scale_x_log10(labels = label_number(big.mark = ".", decimal.mark = ",")) +
+  labs(title = "Prima pura estimada (>0, escala log10)", x = "€ (log10)", y = "Frecuencia") +
+  theme_minimal(base_size = 10) +
+  theme(
+    plot.title    = element_text(hjust = 0.5, face = "bold", size = 12),
+    plot.subtitle = element_text(hjust = 0.5, size = 9)
+  )
+
+```
+
+#### Edad del conductor
+
+Distribución edad del conductor
+
+```{r}
+ggplot(polizas, aes(x = edad_conductor)) +
+  geom_histogram(bins = 50, fill = "steelblue", color = "white") +
+  labs(title = "Distribución de la edad del conductor", x = "Edad", y = "Frecuencia")+
+  theme_minimal() +
+  theme(
+    plot.title = element_text(hjust = 0.5, size = 12),
+    axis.title = element_text(size = 10),
+    axis.text = element_text(size = 8)
+  )
+
+```
+
+Estudiamos cómo categorizar los datos:
+
+```{r}
+exposicion_por_edad <- polizas %>%
+  group_by(edad_conductor) %>%
+  summarise(exposicion_total = sum(exposicion, na.rm = TRUE))
+
+ggplot(exposicion_por_edad, aes(x = edad_conductor, y = exposicion_total)) +
+  geom_col(fill = "steelblue", color = "white") +
+  labs(
+    title = "Distribución de la exposición según la edad del conductor",
+    x = "Edad del conductor",
+    y = "Exposición"
+  )  +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(hjust = 0.5, size = 12, face = "bold"),
+    axis.title = element_text(size = 10),
+    axis.text = element_text(size = 8)
+  )
+
+```
+
+
+```{r}
+siniestros_por_edad <- polizas %>%
+  group_by(edad_conductor) %>%
+  summarise(media_siniestros = mean(numero_siniestros, na.rm = TRUE))
+
+ggplot(siniestros_por_edad, aes(x = edad_conductor, y = media_siniestros)) +
+  geom_col(fill = "steelblue", color = "white") +
+  labs(
+    title = "Número medio de siniestros por edad del conductor",
+    x = "Edad del conductor",
+    y = "Número medio de siniestros"
+  )  +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(hjust = 0.5, size = 12, face = "bold"),
+    axis.title = element_text(size = 10),
+    axis.text = element_text(size = 8)
+  )
+
+
+```
+
+Categorizamos la variable:
+
+```{r}
+polizas <- polizas %>%
+  mutate(
+    edad_conductor_cat = cut(
+      edad_conductor,
+      breaks = c(-Inf, 25, 40, 60,  Inf),
+      labels = c("Jóvenes", "Adultos jóvenes", "Adultos","Mayores"),
+      right = TRUE
+    )
+  )
+```
+
+Estudiamos la variable edad categorizada:
+
+```{r}
+porcentajes_edad <- polizas %>%
+  count(edad_conductor_cat) %>%
+  mutate(porcentaje = round(100 * n / sum(n), 1))
+
+ggplot(porcentajes_edad, aes(x = edad_conductor_cat, y = n)) +
+  geom_col(fill = "steelblue", color = "white") +
+  geom_text(aes(label = paste0(porcentaje, "%")), 
+            vjust = -0.5, size = 3) +
+  labs(
+    title = "Distribución por categoría de edad del conductor",
+    x = "Edad del conductor",
+    y = "Número de pólizas"
+  ) +
+  expand_limits(y = max(porcentajes_edad$n) * 1.1) +  # aumenta el eje Y un 10%
+  theme_minimal(base_size = 13) +
+  theme(
+    plot.title = element_text(hjust = 0.5),
+    axis.title = element_text(size = 10),
+    axis.text = element_text(size = 8)
+  )
+```
+
+Tasa media de siniestros por tramo de edad:
+
+```{r}
+importe_por_edad <- polizas %>%
+  group_by(edad_conductor_cat) %>%
+  summarise(importe_medio = mean(importe_medio_siniestro, na.rm = TRUE)) %>%
+  ungroup()
+
+
+ggplot(importe_por_edad,
+       aes(x = edad_conductor_cat, y = importe_medio)) +
+  geom_col(fill = "steelblue", color = "white") +
+  geom_text(aes(label = sprintf("%.0f €", importe_medio)),
+            vjust = -0.5, size = 3) +
+  labs(
+    title = "Importe medio del siniestro por grupo de edad del conductor",
+    x = "Grupo de edad del conductor",
+    y = "Importe medio (€)"
+  ) +
+  expand_limits(y = max(importe_por_edad$importe_medio) * 1.15) +  # ← aumenta eje Y un 15%
+  theme_minimal(base_size = 13) +
+  theme(
+    plot.title = element_text(hjust = 0.5),
+    axis.title = element_text(size = 10),
+    axis.text  = element_text(size = 8),
+    panel.grid.minor = element_blank()
+  )
+
+```
+
+#### Edad del vehículo
+
+Depuramos la base de datos:
+
+```{r}
+# Modificar las observaciones con exposición > 1, igualándolas a 1
+polizas <- polizas %>%
+  mutate(edad_vehiculo = ifelse(edad_vehiculo > 30, 30, edad_vehiculo))
+
+# Verificar el cambio
+summary(polizas$edad_vehiculo)
+```
+
+Distribución de la variable edad del vehículo depurada: 
+
+```{r}
+ggplot(polizas, aes(x = edad_vehiculo)) +
+  geom_histogram(bins = 30, fill = "steelblue", color = "white") +
+  labs(
+    title = "Distribución de la edad del vehículo",
+    x = "Años del vehículo",
+    y = "Número de pólizas"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(hjust = 0.5, size = 12),
+    axis.title = element_text(size = 10),
+    axis.text = element_text(size = 8)
+  )
+
+```
+
+Categorizamos la variable 
+
+```{r}
+polizas <- polizas %>%
+  mutate(
+    edad_vehiculo_cat = case_when(
+      edad_vehiculo <= 5  ~ "Nuevo",
+      edad_vehiculo <= 12 ~ "Medio",
+      TRUE                ~ "Viejo"
+    )
+  )
+
+polizas$edad_vehiculo_cat <- factor(
+  polizas$edad_vehiculo_cat,
+  levels = c("Nuevo", "Medio", "Viejo")
+)
+
+```
+
+Distribución variable edad del vehículo categorizada:
+
+```{r}
+polizas %>%
+  count(edad_vehiculo_cat) %>%
+  mutate(porcentaje = 100 * n / sum(n)) %>%
+  ggplot(aes(x = edad_vehiculo_cat, y = porcentaje)) +
+  geom_col(fill = "steelblue") +
+  geom_text(aes(label = sprintf("%.1f%%", porcentaje)),
+            vjust = -0.3, size = 3) +
+  labs(
+    title = "Distribución porcentual por categorías de edad del vehículo",
+    x = "Categoría de edad del vehículo",
+    y = "Porcentaje (%)"
+  ) +
+  theme_minimal(base_size = 10)
+
+```
+
+Tasa media de siniestros por categoría de edad del vehículo:
+
+```{r}
+tasa_cat <- polizas %>%
+  group_by(edad_vehiculo_cat) %>%
+  summarise(
+    tasa_media = mean(tasa_siniestros, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+ggplot(tasa_cat, aes(x = edad_vehiculo_cat, y = tasa_media)) +
+   geom_col(fill = "steelblue") +
+  geom_text(aes(label = round(tasa_media, 3)),
+            vjust = -0.3, size = 3) +
+  labs(
+    title = "Tasa media de siniestros según la edad del vehículo",
+    x = "Categoría de edad del vehículo",
+    y = "Tasa media de siniestros"
+  )+
+  theme_minimal() +
+  theme(
+    plot.title = element_text(hjust = 0.5, size = 12),
+    axis.title = element_text(size = 10),
+    axis.text = element_text(size = 8)
+  )
+```
+
+Importe medio de siniestro por categoría del vehículo
+
+```{r}
+importe_cat <- polizas %>%
+  group_by(edad_vehiculo_cat) %>%
+  summarise(
+    importe_medio = mean(importe_medio_siniestro, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+ggplot(importe_cat, aes(x = edad_vehiculo_cat, y = importe_medio)) +
+  geom_col(fill = "steelblue") +
+  geom_text(aes(label = paste0(round(importe_medio, 0), " €")),
+            vjust = -0.3, size = 3) +
+  labs(
+    title = "Importe medio de siniestro según la edad del vehículo",
+    x = "Categoría de edad del vehículo",
+    y = "Importe medio (€)"
+  )+
+  theme_minimal() +
+  theme(
+    plot.title = element_text(hjust = 0.5, size = 12),
+    axis.title = element_text(size = 10),
+    axis.text = element_text(size = 8))
+  
+
+```
+
+#### Potencia
+
+```{r}
+ggplot(polizas, aes(x = potencia)) +
+  geom_bar(fill = "steelblue", color = "white") +
+  labs(
+    title = "Distribución de la potencia del vehículo",
+    x = "Potencia",
+    y = "Número de pólizas"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(hjust = 0.5, size = 12),
+    axis.title = element_text(size = 10),
+    axis.text  = element_text(size = 8)
+  )
+
+```
+
+```{r}
+siniestros_medios_por_pot <- polizas %>%
+  group_by(potencia) %>%
+  summarise(
+    siniestros_medios = mean(numero_siniestros, na.rm = TRUE)
+  ) %>%
+  ungroup()
+
+ggplot(siniestros_medios_por_pot, aes(x = potencia, y = siniestros_medios)) +
+  geom_col(fill = "steelblue", color = "white") +
+  geom_text(aes(label = sprintf("%.3f", siniestros_medios)), 
+            vjust = -0.5, size = 3) +
+  labs(
+    title = "Número medio de siniestros por potencia del vehículo",
+    x = "Potencia del vehículo",
+    y = "Número medio de siniestros por póliza"
+  )+
+  theme_minimal() +
+  theme(
+    plot.title = element_text(hjust = 0.5, size = 12),
+    axis.title = element_text(size = 10),
+    axis.text  = element_text(size = 8)
+  )
+```
+
+```{r}
+tasa_por_pot <- polizas %>%
+  group_by(potencia) %>%
+  summarise(
+    tasa_media = sum(numero_siniestros, na.rm = TRUE) / sum(exposicion, na.rm = TRUE)
+  ) %>%
+  ungroup()
+
+ggplot(tasa_por_pot, aes(x = potencia, y = tasa_media)) +
+  geom_line(color = "steelblue", linewidth = 1.2) +
+  geom_point(color = "steelblue", size = 2) +
+  geom_text(aes(label = sprintf("%.3f", tasa_media)), 
+            vjust = -0.8, size = 3) +
+  labs(
+    title = "Tasa media de siniestralidad por potencia del vehículo",
+    x = "Potencia del vehículo",
+    y = "Tasa media de siniestralidad"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(hjust = 0.5, size = 12),
+    axis.title = element_text(size = 10),
+    axis.text  = element_text(size = 8)
+  )
+```
+
+Potencia en grupo
+```{r}
+polizas <- polizas %>%
+  mutate(
+    potencia_grupo = case_when(
+      potencia <= 5 ~ "Baja",
+      potencia > 5 & potencia <= 9 ~ "Media",
+      potencia > 9 & potencia <= 12 ~ "Alta",
+      potencia > 12 ~ "Muy Alta",
+      TRUE ~ NA_character_
+    )
+  )
+
+```
+
+
+```{r}
+ggplot(polizas, aes(x = potencia_grupo)) +
+  geom_bar(fill = "steelblue", color = "white") +
+  geom_text(stat = "count", aes(label = scales::comma(..count..)), 
+            vjust = -0.4, size = 2.8) +   # añade etiquetas encima de las barras
+  labs(
+    title = "Distribución por grupo de potencia",
+    x = "Grupo de potencia",
+    y = "Número de pólizas"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(hjust = 0.5, size = 12),
+    axis.title = element_text(size = 10),
+    axis.text = element_text(size = 8)
+  )
+```
+### Modelización de la frecuencia
+
+**Preparamos y comprobamos la variable respuesta**
+
+```{r}
+summary(polizas$numero_siniestros)
+table(polizas$numero_siniestros)
+mean(polizas$numero_siniestros)
+var(polizas$numero_siniestros)
+mean(polizas$numero_siniestros == 0)
+
+```
+
+**Probamos la distribución Poisson**
+
+Función auxiliar para la sobredispersión:
+
+```{r}
+dispersion <- function(model) {
+  sum(residuals(model, type = "pearson")^2) / df.residual(model)
+}
+
+polizas$potencia_grupo <- factor(polizas$potencia_grupo, ordered = FALSE)
+
+```
+
+Ajustamos el modelo Poisson básico
+
+```{r}
+modelo_posion_base <- glm(numero_siniestros ~ edad_conductor_cat + edad_vehiculo_cat + potencia_grupo + combustible + bonus_malus,
+              offset = log(exposicion),
+              family = poisson,
+              data = polizas)
+
+```
+
+```{r}
+summary(modelo_posion_base)
+```
+
+```{r}
+dispersion(modelo_posion_base)
+```
+
+```{r}
+AIC(modelo_posion_base)
+```
+
+```{r}
+par(mfrow = c(2, 2)); plot(modelo_posion_base); par(mfrow = c(1, 1))
+```
+
+**Probamos la distribución Binomial negativa**
+
+```{r}
+modelo_binomial_negativo <- glm.nb(
+  numero_siniestros ~ edad_conductor_cat +
+                      edad_vehiculo_cat +
+                      potencia_grupo +
+                      combustible +
+                      bonus_malus +
+                      offset(log(exposicion)),
+  data = polizas
+)
+```
+
+```{r}
+summary(modelo_binomial_negativo)
+```
+
+```{r}
+AIC(modelo_binomial_negativo)
+```
+
+```{r}
+dispersion(modelo_binomial_negativo)
+```
+
+```{r}
+par(mfrow = c(2, 2)); plot(modelo_binomial_negativo); par(mfrow = c(1, 1))
+```
+
+**Estructura del predictor usando Poisson**
+
+**Edad del conductor**
+
+1. Modelo poisson con edad Continua lineal
+
+```{r}
+m_pois_age_lin <- glm(
+  numero_siniestros ~ edad_conductor +
+                      edad_vehiculo_cat +
+                      potencia_grupo +
+                      combustible +
+                      bonus_malus +
+                      offset(log(exposicion)),
+  family = poisson,
+  data   = polizas
+)
+
+AIC(modelo_posion_base, m_pois_age_lin)
+dispersion(m_pois_age_lin)
+
+```
+
+2. Edad cuadrática
+
+```{r}
+m_pois_age_quad <- glm(
+  numero_siniestros ~ edad_conductor + I(edad_conductor^2) +
+                      edad_vehiculo_cat +
+                      potencia_grupo +
+                      combustible +
+                      bonus_malus +
+                      offset(log(exposicion)),
+  family = poisson,
+  data   = polizas
+)
+
+AIC(modelo_posion_base, m_pois_age_quad)
+dispersion(m_pois_age_quad)
+
+```
+3. Edad con spline 
+
+```{r}
+library(splines)
+
+m_pois_age_spline <- glm(
+  numero_siniestros ~ ns(edad_conductor, df = 4) +
+                      edad_vehiculo_cat +
+                      potencia_grupo +
+                      combustible +
+                      bonus_malus +
+                      offset(log(exposicion)),
+  family = poisson,
+  data   = polizas
+)
+
+AIC(modelo_posion_base, m_pois_age_spline)
+dispersion(m_pois_age_spline)
+
+```
+
+**Edad vehículo**
+
+1. Edad vehículo continua
+
+```{r}
+m_pois_veh_lin <- glm(
+  numero_siniestros ~ edad_conductor_cat +   # o tu forma elegida arriba
+                      edad_vehiculo +
+                      potencia_grupo +
+                      combustible +
+                      bonus_malus +
+                      offset(log(exposicion)),
+  family = poisson,
+  data   = polizas
+)
+
+AIC(m_pois_veh_lin)
+dispersion(m_pois_veh_lin)
+
+```
+
+2. Edad vehículo cuadrática
+
+```{r}
+m_pois_veh_quad <- glm(
+  numero_siniestros ~ edad_conductor_cat +
+                      edad_vehiculo + I(edad_vehiculo^2) +
+                      potencia_grupo +
+                      combustible +
+                      bonus_malus +
+                      offset(log(exposicion)),
+  family = poisson,
+  data = polizas
+)
+
+AIC(m_pois_veh_quad)
+dispersion(m_pois_veh_quad)
+```
+
+
+```{r}
+m_pois_veh_spline <- glm(
+  numero_siniestros ~ edad_conductor_cat +
+                      ns(edad_vehiculo, df = 4) +
+                      potencia_grupo +
+                      combustible +
+                      bonus_malus +
+                      offset(log(exposicion)),
+  family = poisson,
+  data = polizas
+)
+
+AIC(m_pois_veh_spline)
+dispersion(m_pois_veh_spline)
+
+```
+
+**Potencia**
+
+1. Potencia lineal 
+```{r}
+m_pois_pot_lin <- glm(
+  numero_siniestros ~ edad_conductor_cat +
+                      edad_vehiculo_cat +
+                      potencia +
+                      combustible +
+                      bonus_malus +
+                      offset(log(exposicion)),
+  family = poisson,
+  data = polizas
+)
+
+AIC(m_pois_pot_lin)
+dispersion(m_pois_pot_lin)
+
+```
+
+
+```{r}
+m_pois_veh_quad_lin <- glm(
+  numero_siniestros ~ edad_conductor_cat +
+                      edad_vehiculo + I(edad_vehiculo^2) +
+                      potencia +
+                      combustible +
+                      bonus_malus +
+                      offset(log(exposicion)),
+  family = poisson,
+  data = polizas
+)
+
+AIC(m_pois_veh_quad_lin)
+dispersion(m_pois_veh_quad_lin)
+```
+
+2. Potencia cuadrática
+
+```{r}
+m_pois_pot_quad <- glm(
+  numero_siniestros ~ edad_conductor_cat +
+                      edad_vehiculo_cat +
+                      potencia + I(potencia^2) +
+                      combustible +
+                      bonus_malus +
+                      offset(log(exposicion)),
+  family = poisson,
+  data = polizas
+)
+
+AIC(m_pois_pot_quad)
+dispersion(m_pois_pot_quad)
+
+```
+
+3. Potencia Log
+
+```{r}
+m_pois_pot_log <- glm(
+  numero_siniestros ~ edad_conductor_cat +
+                      edad_vehiculo_cat +
+                      log(potencia) +
+                      combustible +
+                      bonus_malus +
+                      offset(log(exposicion)),
+  family = poisson,
+  data = polizas
+)
+
+AIC(m_pois_pot_log)
+dispersion(m_pois_pot_log)
+
+```
+
+Actualizo modelo base
+
+```{r}
+modelo_poison_base_1 <- glm(
+  numero_siniestros ~ edad_conductor_cat +
+                      edad_vehiculo + I(edad_vehiculo^2) +
+                      potencia +
+                      combustible +
+                      bonus_malus +
+                      offset(log(exposicion)),
+  family = poisson,
+  data = polizas
+)
+
+summary(modelo_poison_base_1)
+AIC(modelo_poison_base_1)
+dispersion(modelo_poison_base_1)
+
+```
+
+**Combustible**
+
+1. Estudio si se queda o no la variable 
+
+```{r}
+summary(modelo_poison_base_1)$coefficients["combustibleRegular",]
+```
+
+```{r}
+m_pois_no_comb <- glm(
+  numero_siniestros ~ edad_conductor_cat +
+                      edad_vehiculo_cat +
+                      potencia +
+                      bonus_malus +
+                      offset(log(exposicion)),
+  family = poisson,
+  data = polizas
+)
+
+AIC(modelo_poison_base_1, m_pois_no_comb)
+dispersion(m_pois_no_comb)
+
+anova(modelo_poison_base_1, m_pois_no_comb, test="Chisq")
+
+```
+
+2. Pruebo interacción 
+
+```{r}
+m_pois_interact <- glm(
+  numero_siniestros ~ edad_conductor_cat +
+                       edad_vehiculo + I(edad_vehiculo^2)+
+                      potencia*combustible +
+                      bonus_malus +
+                      offset(log(exposicion)),
+  family = poisson,
+  data   = polizas
+)
+
+AIC(modelo_poison_base_1, m_pois_interact)
+dispersion(m_pois_interact)
+
+anova(modelo_poison_base_1, m_pois_interact, test="Chisq")
+
+```
+Actualizo modelo base
+
+```{r}
+m_pois_final <-  glm(
+  numero_siniestros ~ edad_conductor_cat +
+                       edad_vehiculo + I(edad_vehiculo^2)+
+                      potencia*combustible +
+                      bonus_malus +
+                      offset(log(exposicion)),
+  family = poisson,
+  data   = polizas
+)
+
+summary(m_pois_final)
+AIC(m_pois_final)
+dispersion(m_pois_final)
+
+par(mfrow=c(2,2)); plot(m_pois_final); par(mfrow=c(1,1))
+
+```
+
+ **Ajustamos Binomial negativa**
+
+```{r}
+m_nb_final <- glm.nb(
+  numero_siniestros ~ edad_conductor_cat +
+                       edad_vehiculo + I(edad_vehiculo^2)+
+                      potencia*combustible +
+                      bonus_malus +
+                      offset(log(exposicion)),
+  data = polizas
+)
+
+summary(m_nb_final)
+```
+
+comparamos con Poisson 
+
+```{r}
+tabla1 <- AIC(m_pois_final, m_nb_final)
+dispersion(m_nb_final)
+
+```
+Revisamos los residuos
+
+```{r}
+par(mfrow=c(2,2)); plot(m_nb_final); par(mfrow=c(1,1))
+
+```
+
+#### Diagnóstico del modelo NB
+
+Gráficos básicos de diagnóstico
+
+```{r}
+par(mfrow = c(2, 2))
+plot(m_nb_final)    
+par(mfrow = c(1, 1))
+
+```
+
+
+```{r}
+res_nb  <- residuals(m_nb_final, type = "pearson")
+lev_nb  <- hatvalues(m_nb_final)
+cook_nb <- cooks.distance(m_nb_final)
+
+sort(cook_nb, decreasing=TRUE)[1:10]
+```
+
+```{r}
+eff_df <- as.data.frame(effect("edad_vehiculo", m_nb_final))
+
+ggplot(eff_df, aes(x = edad_vehiculo, y = fit)) +
+  geom_line(fill = "steelblue",size = 1) +
+  geom_ribbon(fill = "steelblue",aes(ymin = lower, ymax = upper), alpha = 0.2) +
+  labs(
+    title = "Efecto no lineal de la edad del vehículo sobre la frecuencia siniestral",
+    x = "Edad del vehículo",
+    y = "Frecuencia esperada de siniestros"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(hjust = 0.5, size = 12),
+    axis.title = element_text(size = 10),
+    axis.text = element_text(size = 8)
+  )
+```
+
+### Modelización de la severidad
+
+**Definir la variable severidad y conjunto de datos**
+
+```{r}
+datos_sev <- polizas %>%
+  filter(numero_siniestros > 0) %>%
+  mutate(
+    sev_media = total_importe_siniestros / numero_siniestros
+  )
+```
+
+
+```{r}
+summary(datos_sev$sev_media)
+quantile(datos_sev$sev_media, probs = c(0.90, 0.95, 0.99, 0.995, 0.999), na.rm = TRUE)
+
+corte <- quantile(datos_sev$sev_media, probs = 0.995, na.rm = TRUE)
+
+datos_sev$sev_trunc <- pmin(datos_sev$sev_media, corte)
+
+summary(datos_sev$sev_trunc)
+
+prop_trunc <- mean(datos_sev$sev_media > corte)
+prop_trunc
+
+```
+
+**Exploratorio rápido de la severidad** (para justificar Gamma/log)
+
+```{r}
+ggplot(datos_sev, aes(x = sev_trunc)) +
+  geom_histogram(bins = 50, fill = "#4C72B0", alpha = 0.9) +
+  labs(
+    title = "Severidad truncada",
+    x = "Severidad",
+    y = "Número de pólizas"
+  ) +  theme_minimal() +
+  theme(
+    plot.title = element_text(hjust = 0.5, size = 12),
+    axis.title = element_text(size = 10),
+    axis.text = element_text(size = 8)
+  )
+
+```
+
+
+```{r}
+ggplot(datos_sev, aes(x = log(sev_trunc))) +
+  geom_histogram(bins = 50, fill = "#4C72B0", alpha = 0.9) +
+  labs(
+    title = "Log-severidad",
+    x = "log(Severidad)",
+    y = "Número de pólizas"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(hjust = 0.5, size = 12),
+    axis.title = element_text(size = 10),
+    axis.text = element_text(size = 8)
+  )
+```
+**Definimos los factores explicativos**
+
+```{r}
+datos_sev <- datos_sev %>%
+  mutate(
+    edad_conductor_cat = factor(edad_conductor_cat),
+    edad_vehiculo_cat  = factor(edad_vehiculo_cat),
+    potencia_grupo     = factor(potencia_grupo),
+    combustible        = factor(combustible),
+    bonus_malus_num = as.numeric(as.character(bonus_malus))
+  )
+
+```
+
+**Selección del predictor lineal**
+
+```{r}
+mod_sev_0 <- glm(
+  sev_trunc ~ edad_conductor_cat +
+              edad_vehiculo_cat +
+              potencia_grupo +
+              bonus_malus,
+  family  = Gamma(link = "log"),
+  data    = datos_sev,
+  weights = numero_siniestros
+)
+summary(mod_sev_0)
+
+```
+
+Añadimos combustible 
+
+```{r}
+mod_sev_1 <- glm(
+  sev_trunc ~ edad_conductor_cat +
+              edad_vehiculo_cat +
+              potencia_grupo +
+              bonus_malus +
+              combustible,
+  family  = Gamma(link = "log"),
+  data    = datos_sev,
+  weights = numero_siniestros
+)
+summary(mod_sev_1)
+
+```
+
+```{r}
+AIC(mod_sev_0, mod_sev_1)
+```
+
+**Modelo final**
+
+```{r}
+mod_sev_final <- mod_sev_0  
+```
+
+**Diagnóstico del modelo final**
+**Revisamos la dispersión y calidad global del modelo**
+
+```{r}
+dispersion <- mod_sev_final$deviance / mod_sev_final$df.residual
+dispersion
+
+```
+
+**Interpretar los coeficientes**
+
+```{r}
+coef_sev <- coef(mod_sev_final)
+relatividades <- exp(coef_sev)
+round(relatividades, 3)
+
+```
+
+**Diagnóstico del modelo de severidad**
+
+```{r}
+# Preparar datos de diagnóstico
+datos_diag <- datos_sev %>%
+  mutate(
+    fitted = fitted(mod_sev_0),
+    resid_dev = residuals(mod_sev_0, type = "deviance"),
+    resid_pearson = residuals(mod_sev_0, type = "pearson"),
+    cook = cooks.distance(mod_sev_0)
+  )
+
+# Residuos vs Ajustados
+p1 <- ggplot(datos_diag, aes(x = fitted, y = resid_dev)) +
+  geom_point(alpha = 0.25) +
+  geom_hline(yintercept = 0, linetype = 2) +
+  geom_smooth(se = FALSE, method = "loess") +
+  labs(title = "Residuos devianza vs ajustados", x = "μ̂", y = "Residuos (dev)") +
+  theme_minimal()
+
+# Q-Q plot residuos Pearson
+p2 <- ggplot(datos_diag %>% filter(is.finite(resid_pearson)),
+             aes(sample = resid_pearson)) +
+  stat_qq(alpha = 0.25) +
+  stat_qq_line() +
+  labs(title = "Q-Q residuos Pearson", x = "Cuantiles teóricos", y = "Residuos") +
+  theme_minimal()
+
+# Cook's distance
+n <- nobs(mod_sev_0)
+umbral <- 4 / n
+p3 <- ggplot(datos_diag, aes(x = seq_along(cook), y = cook)) +
+  geom_col() +
+  geom_hline(yintercept = umbral, linetype = 2) +
+  labs(title = "Distancia de Cook", x = "Observación", y = "Cook") +
+  theme_minimal()
+
+# Calibración por deciles (O/E)
+datos_cal <- datos_sev %>%
+  mutate(
+    sev_esp = fitted(mod_sev_0),
+    sev_obs = sev_trunc,
+    w = numero_siniestros
+  ) %>%
+  filter(is.finite(sev_esp), is.finite(sev_obs), w > 0) %>%
+  mutate(decil = ntile(sev_esp, 10)) %>%
+  group_by(decil) %>%
+  summarise(
+    sev_obs = sum(sev_obs * w) / sum(w),
+    sev_esp = sum(sev_esp * w) / sum(w),
+    OE = sev_obs / sev_esp,
+    .groups = "drop"
+  )
+
+p4 <- ggplot(datos_cal, aes(x = decil, y = OE)) +
+  geom_line() +
+  geom_point(size = 2) +
+  geom_hline(yintercept = 1, linetype = 2) +
+  scale_x_continuous(breaks = 1:10) +
+  labs(title = "Calibración por deciles (O/E)", x = "Decil μ̂", y = "O/E") +
+  theme_minimal()
+
+```
+
+### Modelo de Tweedie
+
+**Asiganamos la variable respuesta**
+
+```{r}
+polizas <- polizas %>%
+  mutate(
+    S_bruto = ifelse(numero_siniestros == 0, 0,
+                     total_importe_siniestros)  
+  )
+
+summary(polizas$S_bruto)
+mean(polizas$S_bruto == 0)
+
+p_trunc <- 0.995
+
+c_trunc <- quantile(
+  polizas$S_bruto[polizas$S_bruto > 0],
+  probs = p_trunc,
+  na.rm = TRUE
+)
+
+c_trunc
+
+polizas <- polizas %>%
+  mutate(
+    S_trunc = pmin(S_bruto, as.numeric(c_trunc))
+  )
+
+summary(polizas$S_trunc)
+max(polizas$S_trunc)
+
+```
+
+
+```{r}
+c(
+  umbral_truncado = as.numeric(c_trunc),
+  proporcion_truncadas = mean(polizas$S_bruto > c_trunc),
+  impacto_medio = mean(polizas$S_bruto - polizas$S_trunc)
+)
+
+```
+
+** Especificación y estimación del modelo Tweedie**
+
+```{r}
+m_tw <- gam(
+  S_trunc ~ edad_conductor_cat +
+            edad_vehiculo_cat +
+            potencia_grupo +
+            bonus_malus +
+            combustible +
+            offset(log(exposicion)),
+  family = tw(link = "log"),
+  data   = polizas,
+  method = "REML"
+)
+
+summary(m_tw)
+```
+
+**Diagnóstico global del ajuste**
+
+```{r}
+par(mfrow = c(2,2))
+gam.check(m_tw)
+
+# Extra: residuos vs ajustados (deviance residuals)
+fitted_mu <- predict(m_tw, type = "response")
+res_dev   <- residuals(m_tw, type = "deviance")
+
+plot(fitted_mu, res_dev,
+     xlab = "Valores ajustados (μ̂)",
+     ylab = "Residuos de devianza",
+     main = "Residuos vs Ajustados")
+abline(h = 0, lty = 2)
+```
+
+### Estimación de la prima pura
+#### frecuencia x severidad
+
+```{r}
+
+polizas$mu_freq <- predict(m_nb_final, newdata = polizas, type = "response")
+
+polizas$mu_sev <- predict(mod_sev_final, newdata = polizas, type = "response")
+
+polizas$pp_fs <- polizas$mu_freq * polizas$mu_sev
+
+summary(polizas$pp_fs)
+quantile(polizas$pp_fs, probs = c(0.5, 0.75, 0.9, 0.95, 0.99))
+```
+
+```{r}
+library(ggplot2)
+
+ggplot(polizas, aes(x = log(pp_fs))) +
+  geom_histogram(bins = 50, fill = "steelblue", color = "white") +
+  labs(
+    title = "Distribución de la prima pura estimada (Frecuencia–Severidad)",
+    x = "log(Prima pura estimada)",
+    y = "Frecuencia"
+  )  +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(hjust = 0.5, size = 12),
+    axis.title = element_text(size = 10),
+    axis.text = element_text(size = 8)
+  )
+
+
+```
+
+```{r}
+df_conc <- polizas %>%
+  filter(is.finite(pp_fs)) %>%
+  arrange(desc(pp_fs)) %>%
+  mutate(
+    prop_polizas = row_number() / n(),
+    prop_coste = cumsum(pp_fs) / sum(pp_fs)
+  )
+
+ggplot(df_conc, aes(x = prop_polizas, y = prop_coste)) +
+  geom_line(linewidth = 1, color = "black") +
+  geom_abline(intercept = 0, slope = 1, linetype = "dashed", color = "steelblue") +
+  labs(
+    title = "Concentración del coste esperado",
+    x = "Proporción acumulada de pólizas (ordenadas de mayor a menor)",
+    y = "Proporción acumulada del coste esperado"
+  )  +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(hjust = 0.5, size = 12),
+    axis.title = element_text(size = 10),
+    axis.text = element_text(size = 8)
+  )
+
+```
+
+#### modelo compuesto 
+
+```{r}
+polizas <- droplevels(polizas)
+
+mod_tw_final <- gam(
+  S_trunc ~ edad_conductor_cat +
+            edad_vehiculo_cat +
+            potencia_grupo +
+            bonus_malus +
+            combustible +
+            offset(log(exposicion)),
+  family = tw(link = "log"),
+  data   = polizas,
+  method = "REML"
+)
+
+polizas$pp_tw <- predict(mod_tw_final, newdata = polizas, type = "response")
+
+summary(polizas$pp_tw)
+
+```
+
+```{r}
+ggplot(polizas, aes(x = log(pp_tw))) +
+  geom_histogram(bins = 50, fill = "steelblue", color = "white") +
+  labs(
+    title = "Distribución de la prima pura estimada (Tweedie)",
+    x = "log(Prima pura estimada)",
+    y = "Frecuencia"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(hjust = 0.5, size = 12),
+    axis.title = element_text(size = 10),
+    axis.text = element_text(size = 8)
+  )
+```
+
+
+#### Comparaciones
+```{r}
+mean(polizas$pp_fs)
+mean(polizas$pp_tw)
+
+sum(polizas$pp_fs)
+sum(polizas$pp_tw)
+```
+
+```{r}
+tabla_cuantiles <- rbind(
+  FS = quantile(polizas$pp_fs, probs = c(0.5, 0.75, 0.9, 0.95, 0.99)),
+  TW = quantile(polizas$pp_tw, probs = c(0.5, 0.75, 0.9, 0.95, 0.99))
+)
+
+tabla_cuantiles
+```
+
+```{r}
+cor(polizas$pp_fs, polizas$pp_tw)
+```
+
+```{r}
+polizas$pp_emp <- polizas$importe_medio_siniestro / polizas$exposicion
+
+
+comp_agregada <- polizas %>%
+  summarise(
+    n = n(),
+    O_total = sum(pp_emp, na.rm = TRUE),
+    E_FS_total = sum(pp_fs, na.rm = TRUE),
+    E_TW_total = sum(pp_tw, na.rm = TRUE),
+    O_media = mean(pp_emp, na.rm = TRUE),
+    E_FS_media = mean(pp_fs, na.rm = TRUE),
+    E_TW_media = mean(pp_tw, na.rm = TRUE),
+    O_mediana = median(pp_emp, na.rm = TRUE),
+    E_FS_mediana = median(pp_fs, na.rm = TRUE),
+    E_TW_mediana = median(pp_tw, na.rm = TRUE)
+  )
+
+comp_agregada
+```
+```{r}
+
+cal_fs <- polizas %>%
+  filter(is.finite(pp_fs), is.finite(pp_emp)) %>%
+  mutate(decil = ntile(pp_fs, 10)) %>%
+  group_by(decil) %>%
+  summarise(
+    n = n(),
+    O = mean(pp_emp, na.rm = TRUE),
+    E = mean(pp_fs, na.rm = TRUE),
+    OE = O / E
+  )
+
+cal_tw <- polizas %>%
+  filter(is.finite(pp_tw), is.finite(pp_emp)) %>%
+  mutate(decil = ntile(pp_tw, 10)) %>%
+  group_by(decil) %>%
+  summarise(
+    n = n(),
+    O = mean(pp_emp, na.rm = TRUE),
+    E = mean(pp_tw, na.rm = TRUE),
+    OE = O / E
+  )
+
+ggplot(cal_fs, aes(x = decil, y = OE)) +
+  geom_line() + geom_point() +
+  geom_hline(yintercept = 1, linetype = "dashed") +
+  labs(title = "Calibración por deciles (FS)", x = "Decil (PP_FS)", y = "O/E") +
+  theme_minimal()
+
+ggplot(cal_tw, aes(x = decil, y = OE)) +
+  geom_line() + geom_point() +
+  geom_hline(yintercept = 1, linetype = "dashed") +
+  labs(title = "Calibración por deciles (Tweedie)", x = "Decil (PP_TW)", y = "O/E") +
+  theme_minimal()
+```
+
+### Exportación datos dashboard
+
+```{r}
+write.xlsx(polizas, "base_datos.xlsx")
+```
+
