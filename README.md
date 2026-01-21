@@ -1,4 +1,4 @@
-# TFG
+# TFG: Estimación de la prima pura en seguros de automóvil mediante modelos lineales generalizados y su aplicación en Power BI
 Trabajo de Fin de Grado en Estadística centrado en la estimación de la prima pura en seguros de automóvil mediante modelos lineales generalizados. Se analiza la siniestralidad desde un enfoque frecuencia-severidad y mediante un modelo Tweedie, integrando los resultados en un dashboard interactivo desarrollado en Power BI.
 
 ## Resumen
